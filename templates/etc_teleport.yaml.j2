@@ -1,0 +1,52 @@
+version: v3
+teleport:
+  nodename: lab{{ lab_id }}-{{ inventory_hostname }}
+  data_dir: /var/lib/teleport
+  join_params:
+    token_name: {{ teleport_token }}
+    method: token
+  proxy_server: {{ teleport_proxy }}:443
+  log:
+    output: stderr
+    severity: INFO
+    format:
+      output: text
+  ca_pin: ""
+  diag_addr: ""
+auth_service:
+  enabled: "no"
+ssh_service:
+  enabled: "yes"
+  commands:
+  - name: hostname
+    command: [hostname]
+    period: 1m0s
+  labels:
+    lab: {{ lab_id }}
+proxy_service:
+  enabled: "no"
+  https_keypairs: []
+  https_keypairs_reload_interval: 0s
+  acme: {}
+app_service:
+  enabled: "yes"
+  debug_app: false
+  apps:
+  - name: lab{{ lab_id }}-code-server
+    uri: http://localhost:8080/?workspace=/home/{{ username }}/ansible/ansible.code-workspace
+    public_addr: ""
+    insecure_skip_verify: false
+    labels:
+      lab: {{ lab_id }}
+  - name: lab{{ lab_id }}-gitea
+    uri: http://192.168.100.11:3000
+    public_addr: ""
+    insecure_skip_verify: false
+    labels:
+      lab: {{ lab_id }}
+  - name: lab{{ lab_id }}-vaultwarden
+    uri: http://192.168.100.12:8000
+    public_addr: ""
+    insecure_skip_verify: false
+    labels:
+      lab: {{ lab_id }}

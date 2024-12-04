@@ -1,0 +1,50 @@
+lab:
+  vars:
+    vmid: "200{{ lab_id }}{{ '%03d' | format((internal_ip | split('.'))[-1] | int) }}"
+    external_ip: "100.67.100.{{ lab_id }}"
+    ansible_user: root
+    vscode_extensions:
+      - "redhat.ansible"
+      - "usernamehw.errorlens"
+      - "catppuccin.catppuccin-vsc"
+      - "emroussel.atomize-atom-one-dark-theme"
+      - "samuelcolvin.jinjahtml"
+
+    vscode_settings:
+      editor.defaultFormatter: "redhat.ansible"
+      gitlens.showWelcomeOnInstall: false
+      gitlens.telemetry.enabled: false
+      keyboard.layout: "de"
+      python.diagnostics.sourceMapsEnabled: true
+      redhat.telemetry.enabled: false
+      telemetry.telemetryLevel: "off"
+      terminal.integrated.defaultProfile.linux: "zsh"
+      workbench.colorTheme: "Atomize"
+      window.menuBarVisibility: "visible"
+
+    vscode_keybindings:
+      - key: ctrl+shift+v
+        command: -workbench.action.terminal.paste
+        when: terminalFocus && terminalHasBeenCreated || terminalFocus && terminalProcessSupported
+      - key: shift+insert
+        command: -workbench.action.terminal.pasteSelection
+        when: terminalFocus && terminalHasBeenCreated || terminalFocus && terminalProcessSupported
+  hosts:
+    router:
+      internal_ip: 192.168.100.1
+      ansible_host: "{{ external_ip }}"
+    bastion:
+      internal_ip: 192.168.100.10
+      ansible_host: "{{ internal_ip }}"
+      ansible_ssh_common_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -J admin@{{ external_ip }}"
+  children:
+    servers:
+      vars:
+        ansible_ssh_common_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -J admin@{{ external_ip }}"
+      hosts:
+        git:
+          internal_ip: 192.168.100.11
+          ansible_host: "{{ internal_ip }}"
+        vault:
+          internal_ip: 192.168.100.12
+          ansible_host: "{{ internal_ip }}"

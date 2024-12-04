@@ -1,0 +1,28 @@
+- name: "Deploy Servers"
+  hosts: servers
+  gather_facts: false
+  vars_files:
+    - "vars/creds.yml"
+  handlers:
+    - name: "Wait for host to be reachable"
+      ansible.builtin.wait_for_connection:
+      vars:
+        ansible_python_interpreter: "/usr/bin/python3.9"
+  tasks:
+    - name: "Deploy LXC container"
+      ansible.builtin.include_tasks:
+        file: "tasks/deploy-lxc.yml"
+      vars:
+        vmname: "lab{{ lab_id }}-{{ inventory_hostname }}"
+
+    - name: "Ensure system is up to date"
+      ansible.builtin.include_tasks:
+        file: "tasks/system-updates.yml"
+      vars:
+        ansible_python_interpreter: "/usr/bin/python3.9"
+
+    - name: "Deploy shell configuration"
+      ansible.builtin.include_tasks:
+        file: "tasks/shell-config.yml"
+      vars:
+        ansible_python_interpreter: "/usr/bin/python3.9"

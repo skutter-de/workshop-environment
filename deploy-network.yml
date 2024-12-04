@@ -1,0 +1,78 @@
+- name: Setup Networking for Environment
+  hosts: localhost
+  gather_facts: false
+  handlers:
+    - name: "Reload PVE Network" # noqa: run-once[task]
+      ansible.builtin.include_tasks:
+        file: "tasks/reload-pve-network.yml"
+      run_once: true
+  connection: local
+  vars_files:
+    - "vars/creds.yml"
+  tasks:
+    - name: "Get SDNs"
+      ansible.builtin.uri:
+        url: "{{ pve_url }}/api2/json/cluster/sdn/zones"
+        validate_certs: false
+        method: GET
+        headers:
+          Authorization: "{{ pve_token }}"
+      register: _get_zones
+
+    - name: "Debug"
+      ansible.builtin.debug:
+        var: _get_zones
+        verbosity: 1
+
+    - name: "Create SDN Zone"
+      ansible.builtin.uri:
+        url: "{{ pve_url }}/api2/json/cluster/sdn/zones"
+        validate_certs: false
+        method: POST
+        headers:
+          Authorization: "{{ pve_token }}"
+        body_format: json
+        body:
+          zone: "lab{{ lab_id }}"
+          type: "simple"
+          ipam: "pve"
+      register: create_zone_out
+      changed_when: create_zone_out.status == 200
+      when: ("lab" + lab_id not in (_get_zones.json.data | map(attribute="zone")) | list)
+      notify: "Reload PVE Network"
+
+    - name: "Get VNets"
+      ansible.builtin.uri:
+        url: "{{ pve_url }}/api2/json/cluster/sdn/vnets"
+        validate_certs: false
+        method: GET
+        headers:
+          Authorization: "{{ pve_token }}"
+      register: _get_vnets
+
+    - name: "Debug"
+      ansible.builtin.debug:
+        var: _get_vnets
+        verbosity: 1
+
+    - name: "Create VNet"
+      ansible.builtin.uri:
+        url: "{{ pve_url }}/api2/json/cluster/sdn/vnets"
+        validate_certs: false
+        method: POST
+        headers:
+          Authorization: "{{ pve_token }}"
+        body_format: json
+        body:
+          zone: "lab{{ lab_id }}"
+          vnet: "lab{{ lab_id }}"
+          alias: "Lab Test"
+      register: _create_vnet
+      changed_when: _create_vnet.status == 200
+      when: ("lab" + lab_id not in (_get_vnets.json.data | map(attribute="vnet")) | list)
+      notify: "Reload PVE Network"
+
+    - name: "Debug"
+      ansible.builtin.debug:
+        var: _create_vnet
+        verbosity: 1

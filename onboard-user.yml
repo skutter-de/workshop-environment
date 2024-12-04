@@ -1,0 +1,83 @@
+- name: "Onboard User"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - "vars/creds.yml"
+    - "labs/lab{{ lab_id }}.yml"
+  tasks:
+    - name: "Fail if user is not logged in"
+      ansible.builtin.command:
+        cmd: "tsh status --format=json"
+      register: _teleport_status
+      changed_when: false
+      failed_when: '"Not logged in." in _teleport_status.stderr'
+
+    - name: "Output teleport status"
+      ansible.builtin.debug:
+        var: _teleport_status
+
+    - name: "Get current users"
+      ansible.builtin.command:
+        cmd: "tctl get users --format=json"
+      register: _teleport_users
+      changed_when: false
+
+    - name: "Output User list"
+      ansible.builtin.debug:
+        var: (_teleport_users.stdout | from_json | map(attribute="metadata.name") | list)
+
+    - name: "Ensure User exists"
+      ansible.builtin.command:
+        cmd: "tctl users add --roles=lab_user --ttl 24h0m0s --logins {{ username }} {{ username }} --format=json"
+      register: _create_teleport_user
+      when: (username not in (_teleport_users.stdout | from_json | map(attribute="metadata.name") | list))
+      changed_when: true
+
+    - name: "Export User Data"
+      ansible.builtin.command:
+        cmd: "tctl get users/{{ username }} --format=json"
+      changed_when: false
+      register: _export_user
+
+    - name: "Output stdout"
+      ansible.builtin.debug:
+        var: _export_user.stdout
+
+    - name: Read User Data
+      ansible.builtin.set_fact:
+        user_json: "{{ (_export_user.stdout | from_json)[0] }}" # noqa jinja[spacing]
+
+    - name: "Insert traits into user_json"
+      ansible.builtin.set_fact:
+        user_json: "{{ user_json | combine({'spec': user_json.spec | combine({'traits': user_json.spec.traits | default({}) | combine({'lab_id': ['general', lab_id]})})}) }}" # noqa yaml[line-length]
+
+    - name: Output user_json
+      ansible.builtin.debug:
+        var: user_json
+
+    - name: "Write new data to file"
+      ansible.builtin.copy:
+        content: "{{ user_json | to_nice_json }}"
+        dest: /tmp/{{ username }}_new.json
+        mode: "0644"
+
+    - name: "Apply new json to Teleport cluster"
+      ansible.builtin.command:
+        cmd: "tctl create -f /tmp/{{ username }}_new.json"
+      changed_when: true
+
+    - name: "Send Invitation E-Mail" # noqa: no-handler
+      community.general.mail:
+        username: "{{ mail_server_username }}"
+        password: "{{ mail_server_password }}"
+        host: "{{ mail_server_host }}"
+        port: 465
+        secure: always
+        sender: "{{ mail_sender }}"
+        to: "{{ email }}"
+        subject: "Willkommen zur Workshop-Umgebung"
+        body: "{{ lookup('template', 'welcome-mail.html.j2') }}"
+      when: _create_teleport_user.changed
+      vars:
+        teleport_register_url: "{{ (_create_teleport_user.stdout | from_json).spec.url }}"

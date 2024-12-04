@@ -1,0 +1,36 @@
+- name: "Run deploy-network.yml"
+  ansible.builtin.import_playbook: deploy-network.yml
+
+- name: "Run deploy-router.yml" # noqa syntax-check[empty-playbook]
+  ansible.builtin.import_playbook: deploy-router.yml
+
+- name: "Run deploy-servers.yml"
+  ansible.builtin.import_playbook: deploy-servers.yml
+
+- name: "Run deploy-bastion.yml"
+  ansible.builtin.import_playbook: deploy-bastion.yml
+
+- name: "Snapshot all Hosts after deployment"
+  hosts: lab
+  connection: local
+  gather_facts: false
+  # vars:
+  #   ansible_python_interpreter: "/home/sebastian/workshop-environment/.venv/bin/python3"
+  vars_files:
+    - "vars/creds.yml"
+  tasks:
+    - name: "End Play when wipe"
+      ansible.builtin.meta: end_play
+      when: wipe is defined and wipe
+    - name: "Snapshot Host"
+      community.general.proxmox_snap:
+        api_host: "{{ pve_host }}"
+        api_user: "{{ pve_api_user }}"
+        api_token_id: "{{ pve_api_token_id }}"
+        api_token_secret: "{{ pve_api_token_secret }}"
+        validate_certs: false
+        vmid: "{{ vmid }}"
+        snapname: "ready"
+        vmstate: true
+        state: present
+      delegate_to: localhost

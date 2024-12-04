@@ -1,0 +1,235 @@
+- name: "Deploy Bastion Host"
+  hosts: bastion
+  gather_facts: false
+  vars_files:
+    - "vars/creds.yml"
+    - "labs/lab{{ lab_id }}.yml"
+  handlers:
+    - name: "Wait for host to be reachable"
+      ansible.builtin.wait_for_connection:
+      vars:
+        ansible_python_interpreter: "/usr/bin/python3.9"
+    - name: "Restart code-server"
+      ansible.builtin.systemd:
+        name: "code-server@{{ username }}.service"
+        state: restarted
+    - name: "Restart Teleport"
+      ansible.builtin.systemd:
+        name: teleport.service
+        state: restarted
+  tasks:
+    - name: "Fail if tsh is not logged in"
+      ansible.builtin.command:
+        cmd: "tsh status"
+      register: _tsh_status
+      changed_when: false
+      failed_when: "'ERROR: Not logged in.' in _tsh_status.stdout or 'ERROR: Active profile expired.' in _tsh_status.stdout"
+      delegate_to: localhost
+      connection: local
+
+    - name: "Deploy host for bastion"
+      ansible.builtin.include_tasks:
+        file: "tasks/deploy-lxc.yml"
+      vars:
+        vmname: "lab{{ lab_id }}-{{ inventory_hostname }}"
+        vm_memory: 2048
+
+    - name: "Ensure system is up to date"
+      ansible.builtin.include_tasks:
+        file: "tasks/system-updates.yml"
+      vars:
+        ansible_python_interpreter: "/usr/bin/python3.9"
+
+    - name: "Ensure python3.12 is installed"
+      ansible.builtin.dnf:
+        name:
+          - python3.12
+          - python3.12-pip
+          - python3.12-wheel
+        state: present
+      vars:
+        ansible_python_interpreter: "/usr/bin/python3.9"
+
+    - name: "Set Ansible to use Python 3.12"
+      ansible.builtin.set_fact:
+        ansible_python_interpreter: "/usr/bin/python3.12"
+
+    - name: "Ensure virtualenv is installed"
+      ansible.builtin.pip:
+        executable: /usr/bin/pip3.12
+        name:
+          - virtualenv
+        state: present
+
+    - name: "Ensure user exists"
+      ansible.builtin.user:
+        name: "{{ username }}"
+        comment: "{{ given_name }} {{ surname }}"
+        shell: /bin/zsh
+        create_home: true
+        generate_ssh_key: true
+        ssh_key_type: ed25519
+        ssh_key_comment: "{{ username }}@bastion"
+        ssh_key_file: ".ssh/id_ed25519"
+        state: present
+
+    - name: "Deploy shell configuration"
+      ansible.builtin.include_tasks:
+        file: "tasks/shell-config.yml"
+      vars:
+        users:
+          - "{{ username }}"
+
+    - name: "Ensure venv exists and python packages are installed"
+      ansible.builtin.pip:
+        name:
+          - ansible
+          - ansible-lint
+        state: present
+        virtualenv: "/home/{{ username }}/ansible/.venv"
+        virtualenv_python: "python3.12"
+        virtualenv_command: "/usr/local/bin/virtualenv"
+      become_user: "{{ username }}"
+      become: true
+
+    - name: Get latest tag for code-server
+      ansible.builtin.uri:
+        url: "https://api.github.com/repos/coder/code-server/releases/latest"
+        method: GET
+        return_content: true
+      register: code_server_latest_tag_response
+
+    - name: "Ensure code-server is installed"
+      ansible.builtin.dnf:
+        name: "https://github.com/coder/code-server/releases/download/{{ code_server_latest_tag_response.json.tag_name }}/code-server-{{ code_server_latest_tag_response.json.tag_name | regex_replace('^v', '') }}-amd64.rpm" # noqa yaml[line-length]
+        disable_gpg_check: true
+        state: present
+
+    - name: "Ensure directories for code-server configuration exist"
+      ansible.builtin.file:
+        dest: "/home/{{ username }}/.config/code-server"
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: "0755"
+        state: directory
+
+    - name: "Ensure code-server configuration is deployed"
+      ansible.builtin.copy:
+        src: code_server_config.yaml
+        dest: "/home/{{ username }}/.config/code-server/config.yaml"
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: "0644"
+      notify: "Restart code-server"
+
+    - name: "Ensure code-server is enabled and started"
+      ansible.builtin.systemd:
+        name: "code-server@{{ username }}"
+        enabled: true
+        state: started
+
+    - name: "Ensure code-server extensions are installed"
+      loop: "{{ vscode_extensions }}"
+      ansible.builtin.command:
+        cmd: "code-server --install-extension {{ item }}"
+      register: _install_extension_out
+      changed_when: ("was successfully installed" in _install_extension_out.stdout)
+      become_user: "{{ username }}"
+      become: true
+
+    - name: "Ensure code-server settings.json is deployed"
+      ansible.builtin.copy:
+        content: "{{ vscode_settings | to_nice_json }}"
+        dest: "/home/{{ username }}/.local/share/code-server/User/settings.json"
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: "0644"
+
+    - name: "Ensure code-server keybindings.json is deployed"
+      ansible.builtin.copy:
+        content: "{{ vscode_keybindings | to_nice_json }}"
+        dest: "/home/{{ username }}/.local/share/code-server/User/keybindings.json"
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: "0644"
+
+    - name: "Deploy Teleport Agent"
+      ansible.builtin.include_tasks:
+        file: "tasks/teleport-agent.yml"
+      vars:
+        teleport_version: "v15"
+
+    - name: "Ensure Project Directory Structure exists"
+      ansible.builtin.file:
+        path: "/home/{{ username }}/ansible/{{ item }}"
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: "0755"
+        state: directory
+      loop:
+        - "inventory"
+        - "files"
+        - "templates"
+
+    - name: "Ensure docker-compose.yml is deployed"
+      ansible.builtin.template:
+        src: "docker-compose.yml.j2"
+        dest: "/home/{{ username }}/ansible/files/docker-compose.yml"
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: "0644"
+
+    - name: "Ensure starting files exist"
+      ansible.builtin.copy:
+        content: "{{ item.content }}"
+        dest: "/home/{{ username }}/ansible/{{ item.path }}"
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: "0644"
+      loop:
+        - path: "hello-world.yml"
+          content: |
+            # Hello World Playbook
+        - path: "inventory/inventory.yml"
+          content: |
+            # Inventory
+    - name: "Copy code-workspace file"
+      ansible.builtin.copy:
+        src: "ansible.code-workspace"
+        dest: "/home/{{ username }}/ansible/ansible.code-workspace"
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        mode: "0644"
+
+    - name: "Wipe known_hosts file"
+      ansible.builtin.file:
+        path: "/home/{{ username }}/.ssh/known_hosts"
+        state: absent
+
+    - name: "Scan hostkeys"
+      ansible.builtin.shell:
+        cmd: |
+          set -o pipefail
+          ssh-keyscan {{ item }} | sudo -u {{ username }} tee -a /home/{{ username }}/.ssh/known_hosts
+          ssh-keyscan {{ item }}.lab.internal | sudo -u {{ username }} tee -a /home/{{ username }}/.ssh/known_hosts
+      loop: "{{ groups['lab'] | difference(['router', 'bastion']) }}"
+      remote_user: "{{ username }}"
+      become: false
+      changed_when: true
+
+    - name: "Read SSH Public Key"
+      ansible.builtin.slurp:
+        src: "/home/{{ username }}/.ssh/id_ed25519.pub"
+      register: _ssh_pubkey
+
+    - name: "Ensure public key is authorized"
+      ansible.posix.authorized_key:
+        user: root
+        key: "{{ _ssh_pubkey.content | b64decode }}"
+        manage_dir: true
+        state: present
+      delegate_to: "{{ item }}"
+      when: inventory_hostname == "bastion"
+      loop: "{{ (groups['lab'] | difference(['bastion'])) | difference(['router']) }}"
+      vars:
+        ansible_python_interpreter: "/usr/bin/python3.9"

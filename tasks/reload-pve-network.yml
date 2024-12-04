@@ -1,0 +1,25 @@
+- name: "Reload network"
+  ansible.builtin.uri:
+    url: "{{ pve_url }}/api2/json/cluster/sdn"
+    validate_certs: false
+    method: PUT
+    headers:
+      Authorization: "{{ pve_token }}"
+    status_code:
+      - 200
+  register: _reload_pve_network_out
+
+- name: "Wait for reload task completion"
+  ansible.builtin.uri:
+    url: "{{ pve_url }}/api2/json/nodes/pve1/tasks/{{ _reload_pve_network_out.json.data }}/status"
+    validate_certs: false
+    method: GET
+    headers:
+      Authorization: "{{ pve_token }}"
+    status_code:
+      - 200
+  register: _reload_task_status
+  retries: 5
+  delay: 5
+  until: _reload_task_status.json.data.status == "stopped"
+  failed_when: _reload_task_status.json.data.exitstatus is defined and _reload_task_status.json.data.exitstatus != "OK"

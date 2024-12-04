@@ -1,0 +1,134 @@
+- name: "Deploy LXC | Stop and remove host if rebuilding"
+  when: (rebuild is defined and role in rebuild) or (wipe is defined and wipe)
+  block:
+    - name: "Deploy LXC | Get Resources" # noqa: run-once[task]
+      ansible.builtin.uri:
+        url: "{{ pve_url }}/api2/json/cluster/resources?type=vm"
+        validate_certs: false
+        method: GET
+        headers:
+          Authorization: "{{ pve_token }}"
+      connection: local
+      run_once: true
+      register: _get_resources
+
+    - name: "Deploy LXC | Ensure Host is stopped"
+      community.general.proxmox:
+        api_host: "{{ pve_host }}"
+        api_user: "{{ pve_api_user }}"
+        api_token_id: "{{ pve_api_token_id }}"
+        api_token_secret: "{{ pve_api_token_secret }}"
+        validate_certs: false
+        vmid: "{{ vmid }}"
+        force: true
+        state: stopped
+      connection: local
+      when: (vmname in _get_resources.json.data | map(attribute="name") | list)
+
+    - name: "Deploy LXC | Ensure Host is absent"
+      community.general.proxmox:
+        api_host: "{{ pve_host }}"
+        api_user: "{{ pve_api_user }}"
+        api_token_id: "{{ pve_api_token_id }}"
+        api_token_secret: "{{ pve_api_token_secret }}"
+        validate_certs: false
+        vmid: "{{ vmid }}"
+        state: absent
+      connection: local
+
+    - name: "Deploy LXC | End Play when wipe"
+      ansible.builtin.meta: end_play
+      when: wipe is defined and wipe
+
+- name: "Deploy LXC | Ensure host exists"
+  community.general.proxmox:
+    api_host: "{{ pve_host }}"
+    api_user: "{{ pve_api_user }}"
+    api_token_id: "{{ pve_api_token_id }}"
+    api_token_secret: "{{ pve_api_token_secret }}"
+    validate_certs: false
+    node: "{{ pve_node }}"
+    vmid: "{{ vmid }}"
+    hostname: "{{ vmname }}"
+    ostemplate: "{{ os_template }}"
+    cores: 2
+    memory: "{{ vm_memory | default(1024) }}"
+    disk: "{{ pve_vm_storage }}:16"
+    netif:
+      net0: "name=eth0,ip={{ internal_ip }}/24,gw=192.168.100.1,bridge=lab{{ lab_id }}"
+    nameserver: "192.168.100.1"
+    searchdomain: "lab.internal"
+    pubkey: "{{ ssh_public_keys }}"
+    password: "{{ root_pw | default(omit) }}"
+    features:
+      - nesting=1
+    state: present
+  connection: local
+
+- name: "Deploy LXC | Ensure Host is started"
+  community.general.proxmox:
+    api_host: "{{ pve_host }}"
+    api_user: "{{ pve_api_user }}"
+    api_token_id: "{{ pve_api_token_id }}"
+    api_token_secret: "{{ pve_api_token_secret }}"
+    validate_certs: false
+    vmid: "{{ vmid }}"
+    state: started
+  connection: local
+  register: _lxc_start
+
+- name: "Deploy LXC | Wait for host to be reachable" # noqa: no-handler
+  ansible.builtin.wait_for_connection:
+  vars:
+    ansible_python_interpreter: "/usr/bin/python3.9"
+  when: _lxc_start.changed
+
+- name: "Deploy LXC | Gathering facts"
+  ansible.builtin.setup:
+  vars:
+    ansible_python_interpreter: "/usr/bin/python3.9"
+
+- name: "Deploy LXC | Ensure hostname is set"
+  ansible.builtin.hostname:
+    name: "{{ inventory_hostname }}"
+    use: systemd
+  vars:
+    ansible_python_interpreter: "/usr/bin/python3.9"
+
+- name: "Deploy LXC | Ensure /etc/hosts is correct" # noqa ansible-lint[no-relative-path]
+  ansible.builtin.template:
+    src: "etc_hosts.j2"
+    dest: "/etc/hosts"
+    owner: root
+    group: root
+    mode: "0644"
+  vars:
+    ansible_python_interpreter: "/usr/bin/python3.9"
+
+- name: "Deploy LXC | Ensure PVE will not reset the hostname"
+  ansible.builtin.copy:
+    content: ""
+    dest: "/etc/.pve-ignore.{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - hosts
+    - hostname
+  vars:
+    ansible_python_interpreter: "/usr/bin/python3.9"
+
+- name: "Deploy LXC | Ensure capabilities for ping is set"
+  community.general.capabilities:
+    capability: cap_net_raw+p
+    path: /bin/ping
+    state: present
+  changed_when: false
+  vars:
+    ansible_python_interpreter: "/usr/bin/python3.9"
+
+- name: "Deploy LXC | Ensure timezone is correct"
+  community.general.timezone:
+    name: "Europe/Berlin"
+  vars:
+    ansible_python_interpreter: "/usr/bin/python3.9"

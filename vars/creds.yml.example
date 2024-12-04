@@ -1,0 +1,29 @@
+# Proxmox
+pve_host: pve1.example.com
+pve_node: pve1
+pve_url: "https://{{ pve_host }}:8006"
+pve_api_user: "root@pam"
+pve_api_token_id: "ansible"
+pve_api_token_secret: ""
+pve_token: "PVEAPIToken={{ pve_api_user }}!{{ pve_api_token_id }}={{ pve_api_token_secret }}"
+pve_vm_storage: "local-zfs"
+os_template: "local:vztmpl/rockylinux-9-custom_20240925_amd64.tar.gz"
+root_pw: ""
+ssh_public_keys: "{{ lookup('file', '~/.ssh/id_ed25519.pub') }}"
+
+# Router
+router_ip: "192.168.0.1"
+router_username: "admin"
+router_password: ""
+mikrotik_username: "user@example.com"
+mikrotik_password: "supersecret"
+
+# Mail Server
+mail_server_host: "mail.example.com"
+mail_server_username: "noreply@example.com"
+mail_server_password: "supersecret"
+mail_sender: "ABC"
+
+# Teleport
+teleport_proxy: teleport.example.com
+teleport_url: "https://{{ teleport_proxy }}"

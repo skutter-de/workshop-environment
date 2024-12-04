@@ -1,0 +1,306 @@
+- name: "Deploy Router"
+  hosts: "router"
+  vars_files:
+    - "labs/lab{{ lab_id }}.yml"
+    - "vars/creds.yml"
+  connection: local
+  gather_facts: false
+  module_defaults:
+    group/community.routeros.api:
+      hostname: "{{ ansible_host }}"
+      username: "admin"
+      password: ""
+      validate_certs: false
+  tasks:
+    - name: "Stop and remove host if rebuilding"
+      when: (rebuild is defined and inventory_hostname in rebuild) or (wipe is defined and wipe)
+      block:
+        - name: "Get Resources" # noqa: run-once[task]
+          ansible.builtin.uri:
+            url: "{{ pve_url }}/api2/json/cluster/resources?type=vm"
+            validate_certs: false
+            method: GET
+            headers:
+              Authorization: "{{ pve_token }}"
+          connection: local
+          run_once: true
+          register: _get_resources
+
+        - name: "Ensure Host is stopped"
+          community.general.proxmox_kvm:
+            api_host: "{{ pve_host }}"
+            api_user: "{{ pve_api_user }}"
+            api_token_id: "{{ pve_api_token_id }}"
+            api_token_secret: "{{ pve_api_token_secret }}"
+            validate_certs: false
+            vmid: "{{ vmid }}"
+            force: true
+            state: stopped
+          connection: local
+          when: (("lab" + lab_id + "-" + inventory_hostname) in _get_resources.json.data | map(attribute="name") | list)
+
+        - name: "Ensure Host is absent"
+          community.general.proxmox_kvm:
+            api_host: "{{ pve_host }}"
+            api_user: "{{ pve_api_user }}"
+            api_token_id: "{{ pve_api_token_id }}"
+            api_token_secret: "{{ pve_api_token_secret }}"
+            validate_certs: false
+            vmid: "{{ vmid }}"
+            state: absent
+          connection: local
+
+        - name: "Ensure SSH fingerprint is wiped"
+          ansible.builtin.known_hosts:
+            name: "{{ ansible_host }}"
+            state: absent
+          connection: local
+
+        - name: "End Play when wipe"
+          ansible.builtin.meta: end_play
+          when: wipe is defined and wipe
+
+    - name: "Ensure VM exists"
+      community.general.proxmox_kvm:
+        api_host: "{{ pve_host }}"
+        api_user: "{{ pve_api_user }}"
+        api_token_id: "{{ pve_api_token_id }}"
+        api_token_secret: "{{ pve_api_token_secret }}"
+        newid: "{{ vmid }}"
+        node: "pve1"
+        clone: template-routeros
+        name: "lab{{ lab_id }}-router"
+        full: true
+        # autostart: true
+        # net:
+        #   net0: "virtio,bridge=vmbr0"
+        #   net1: "virtio,bridge={{ lab_id }}"
+        state: present
+
+    - name: "Ensure VM autostarts"
+      community.general.proxmox_kvm:
+        api_host: "{{ pve_host }}"
+        api_user: "{{ pve_api_user }}"
+        api_token_id: "{{ pve_api_token_id }}"
+        api_token_secret: "{{ pve_api_token_secret }}"
+        node: pve1
+        vmid: "{{ vmid }}"
+        name: "lab{{ lab_id }}-router"
+        # full: true
+        autostart: true
+        state: present
+
+    - name: "Ensure Network interfaces are correct"
+      community.general.proxmox_nic:
+        api_host: "{{ pve_host }}"
+        api_user: "{{ pve_api_user }}"
+        api_token_id: "{{ pve_api_token_id }}"
+        api_token_secret: "{{ pve_api_token_secret }}"
+        vmid: "{{ vmid }}"
+        interface: "{{ item.interface }}"
+        model: virtio
+        bridge: "{{ item.bridge }}"
+        state: present
+      loop:
+        - interface: net0
+          bridge: "{{ lab_isp_bridge }}"
+        - interface: net1
+          bridge: "lab{{ lab_id }}"
+
+
+    # - name: "Wait for clone to finish"
+    #   ansible.builtin.pause:
+    #     seconds: 10
+
+    - name: "Get vm info"
+      ansible.builtin.uri:
+        url: "{{ pve_url }}/api2/json/nodes/pve1/qemu/{{ vmid }}/config"
+        validate_certs: false
+        method: GET
+        headers:
+          Authorization: "{{ pve_token }}"
+      register: _vm_info
+
+    - name: "Print vm_info"
+      ansible.builtin.debug:
+        var: _vm_info
+        verbosity: 1
+
+    - name: "Set MAC"
+      ansible.builtin.set_fact:
+        mac: "{{ _vm_info.json.data.net0.split(',')[0].split('=')[1] }}"
+
+    - name: "Ensure DHCP reservation is set if exists"
+      community.routeros.api_find_and_modify:
+        allow_no_matches: true
+        require_matches_max: 1
+        path: "/ip/dhcp-server/lease"
+        hostname: "{{ router_ip }}"
+        username: "{{ router_username }}"
+        password: "{{ router_password }}"
+        validate_certs: false
+        find:
+          comment: "{{ inventory_hostname }}"
+        values:
+          mac-address: "{{ mac }}"
+          address: "{{ external_ip }}"
+          server: "{{ dhcp_server }}"
+      delegate_to: lab_isp_router
+      register: _ensure_dhcp
+
+    - name: "Ensure DHCP reversation is created if absent"
+      community.routeros.api_modify:
+        path: ip dhcp-server lease
+        data:
+          - mac-address: "{{ mac }}"
+            address: "{{ external_ip }}"
+            comment: "{{ inventory_hostname }}"
+            server: "{{ dhcp_server }}"
+        hostname: "{{ router_ip }}"
+        username: "{{ router_username }}"
+        password: "{{ router_password }}"
+        validate_certs: false
+      when: _ensure_dhcp.match_count == 0
+      delegate_to: lab_isp_router
+
+    - name: "Ensure VM is started"
+      community.general.proxmox_kvm:
+        api_host: "{{ pve_host }}"
+        api_user: "{{ pve_api_user }}"
+        api_token_id: "{{ pve_api_token_id }}"
+        api_token_secret: "{{ pve_api_token_secret }}"
+        vmid: "{{ vmid }}"
+        state: started
+
+    - name: "Gather facts" # noqa: args[module]
+      community.routeros.api_facts:
+        gather_subset: all
+      until: ansible_net_hostname is defined
+      retries: 10
+      delay: 5
+
+    - name: "Dump facts"
+      ansible.builtin.debug:
+        var: ansible_facts
+        verbosity: 1
+
+    - name: "Ensure system identity is set" # noqa: args[module]
+      community.routeros.api_modify:
+        path: system identity
+        data:
+          - name: "{{ inventory_hostname }}"
+
+    - name: "Ensure Gateway IP is set" # noqa: args[module]
+      community.routeros.api_modify:
+        path: ip address
+        data:
+          - address: 192.168.100.1/24
+            interface: ether2
+            network: 192.168.100.0
+
+    - name: "Ensure SNAT is enabled" # noqa: args[module]
+      community.routeros.api_modify:
+        path: ip firewall nat
+        data:
+          - action: src-nat
+            chain: srcnat
+            out-interface: ether1
+            to-addresses: "{{ external_ip }}"
+
+    - name: "Ensure SSH forwarding is enabled" # noqa: args[module]
+      community.routeros.api_modify:
+        path: ip ssh
+        data:
+          - forwarding-enabled: both
+
+    - name: "Ensure DNS queries from network are allowed" # noqa: args[module]
+      community.routeros.api_modify:
+        path: ip dns
+        data:
+          - allow-remote-requests: "yes"
+
+
+    - name: "Gather DNS entries"
+      ansible.builtin.set_fact:
+        dns_entries: "{{ dns_entries | default([]) +
+          [
+            {
+              'name': item + '.lab.internal.',
+              'type': 'A',
+              'address': hostvars[item].internal_ip
+            }
+          ] }}" # noqa jinja[spacing]
+      loop: "{{ groups['lab'] }} "
+
+    - name: "Debug dns_entries"
+      ansible.builtin.debug:
+        var: dns_entries
+        verbosity: 1
+
+    - name: "Ensure DNS entries are set" # noqa: args[module]
+      community.routeros.api_modify:
+        path: ip dns static
+        data: "{{ dns_entries }}"
+
+    - name: "Get license status" # noqa: args[module]
+      community.routeros.api:
+        path: system license
+      register: _license_status
+
+    - name: "Output _license_status"
+      ansible.builtin.debug:
+        var: _license_status
+        verbosity: 1
+
+    - name: "Get trial license if level == free"
+      when: (_license_status.msg[0].level == "free")
+      block:
+        - name: "Generate new software id" # noqa: args[module]
+          community.routeros.api:
+            path: "system license"
+            cmd: "generate-new-id"
+          register: _regenerate_id
+          changed_when: true
+
+        - name: "Output _generate_id"
+          ansible.builtin.debug:
+            var: _regenerate_id
+            verbosity: 1
+
+        - name: "Request trial license" # noqa: args[module]
+          community.routeros.api:
+            path: "system license"
+            cmd: "renew level=p10 account={{ mikrotik_username }} password={{ mikrotik_password }}"
+          register: _activate_trial
+          changed_when: (_activate_trial.msg[-1].status == "done")
+          failed_when: ("ERROR" in _activate_trial.msg[-1].status)
+
+        - name: "Get license status after activating trial license" # noqa: args[module]
+          community.routeros.api:
+            path: system license
+          register: _license_status_2
+
+        - name: "Output _license_status_2"
+          ansible.builtin.debug:
+            var: _license_status_2
+            verbosity: 1
+
+    - name: "Find SSH key of remote host"
+      ansible.builtin.command:
+        cmd: "ssh-keyscan {{ external_ip }}"
+      changed_when: false
+      connection: local
+      register: _ssh_keyscan
+
+    - name: "Output ssh keyscan"
+      ansible.builtin.debug:
+        var: _ssh_keyscan
+        verbosity: 1
+
+    - name: "Ensure ssh fingerprint is trusted"
+      ansible.builtin.known_hosts:
+        name: "{{ external_ip }}"
+        key: "{{ _ssh_keyscan.stdout }}"
+        state: present
+      connection: local
+      when: ("router" in inventory_hostname)

@@ -1,0 +1,67 @@
+# Teleport Agent
+- name: "Teleport Agent | Ensure Teleport repo is installed"
+  ansible.builtin.get_url:
+    url: "https://yum.releases.teleport.dev/rhel/{{ ansible_facts.distribution_major_version }}/Teleport/{{ ansible_facts.architecture }}/stable/{{ teleport_version }}/teleport.repo" # noqa yaml[line-length]
+    dest: /etc/yum.repos.d/teleport.repo
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: "Teleport Agent | Ensure Teleport is installed"
+  ansible.builtin.dnf:
+    name: "teleport"
+    state: present
+
+- name: "Teleport Agent | Check if teleport config exists"
+  ansible.builtin.stat:
+    path: "/etc/teleport.yaml"
+  register: teleport_yaml_stat
+
+- name: "Teleport Agent | Generate token if /etc/teleport.yaml does not exist"
+  when: not teleport_yaml_stat.stat.exists
+  block:
+    - name: "Generate Teleport token"
+      ansible.builtin.command:
+        cmd: |
+          /usr/local/bin/tctl tokens add --ttl=5m --type=node,app --format yaml
+      register: teleport_config
+      changed_when: teleport_config.rc == 0
+      delegate_to: localhost
+      connection: local
+      become: false
+
+    - name: "Teleport Agent | Parse Teleport token"
+      ansible.builtin.set_fact:
+        teleport_token: "{{ (teleport_config.stdout_lines[-1] | split(' '))[1] }}"
+
+- name: "Teleport Agent | Get Teleport token from existing /etc/teleport.yaml"
+  when: teleport_yaml_stat.stat.exists
+  block:
+    - name: "Read /etc/teleport.yaml"
+      ansible.builtin.slurp:
+        src: "/etc/teleport.yaml"
+      register: teleport_config
+
+    - name: "Parse Teleport token from /etc/teleport.yaml"
+      ansible.builtin.set_fact:
+        teleport_token: "{{ (teleport_config.content | b64decode | from_yaml).teleport.join_params.token_name }}"
+
+- name: "Teleport Agent | Print Teleport Config"
+  ansible.builtin.debug:
+    var: teleport_token
+    verbosity: 1
+
+- name: "Teleport Agent | Generate Teleport Config"
+  ansible.builtin.template:
+    src: "etc_teleport.yaml.j2"
+    dest: "/etc/teleport.yaml"
+    owner: root
+    group: root
+    mode: "0600"
+  notify: "Restart Teleport"
+
+- name: "Teleport Agent | Ensure Teleport is enabled and started"
+  ansible.builtin.systemd:
+    name: teleport.service
+    enabled: true
+    state: started

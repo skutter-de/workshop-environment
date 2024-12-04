@@ -1,0 +1,12 @@
+# System updates
+- name: "System Updates | Run system updates"
+  ansible.builtin.dnf:
+    update_cache: true
+    update_only: true
+    name: "*"
+    state: latest
+  register: _system_updates
+
+- name: "System Updates | Reboot if updated" # noqa no-handler
+  ansible.builtin.reboot:
+  when: _system_updates.changed

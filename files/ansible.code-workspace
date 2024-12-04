@@ -1,0 +1,11 @@
+{
+	"folders": [
+		{
+			"path": "."
+		}
+	],
+	"settings": {
+		"ansible.python.interpreterPath": "~/ansible/.venv/bin/python3",
+    	"python.defaultInterpreterPath": "~/ansible/.venv/bin/python3"
+	}
+}
